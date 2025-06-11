@@ -194,14 +194,31 @@ struct PolicyHandler : public BaseReaderHandler<UTF8<>, PolicyHandler> {
       found_threshold = true;
       threshold = str;
 
-      // 解析 payload 字符串中的 JSON
+      if (str == nullptr || strlen(str) == 0) {
+        std::cout << "[INFO] Empty payload string. Skipping payload parsing.\n";
+        return true;
+      }
+
+      // 嘗試解析 payload 字符串中的 JSON
       Document payloadDoc;
       payloadDoc.Parse(str);
+
+      if (payloadDoc.HasParseError()) {
+        std::cerr << "[WARN] Failed to parse payload JSON. Skipping: " << str << std::endl;
+        return true;
+      }
+
+      if (!payloadDoc.IsObject()) {
+        std::cerr << "[WARN] Payload is not a JSON object. Skipping: " << str << std::endl;
+        return true;
+      }
+
       if (payloadDoc.HasMember("threshold") && payloadDoc["threshold"].IsInt()) {
         threshold1 = payloadDoc["threshold"].GetInt();
         std::cout << "[INFO] Setting Threshold for A1-P value:(UEID) " << threshold1 << "\n";
       }
     }
+
     else if (curr_key.compare("policy_instance_id") == 0) {
       policy_instance_id = str;
     }
@@ -434,26 +451,43 @@ void send_prediction_request(int ues_to_predict) {
 }
 
 void policy_callback( Message& mbuf, int mtype, int subid, int len, Msg_component payload,  void* data ) {
-  string arg ((const char*)payload.get(), len); // RMR payload might not have a nil terminanted char
+  string arg ((const char*)payload.get(), len); // RMR payload might not have a null-terminated char
 
   cout << "[INFO] Policy Callback got a message, type=" << mtype << ", length=" << len << "\n";
-  cout << "[INFO] Payload is " << arg << endl;
+  cout << "[INFO] Payload is: " << arg << endl;
+
+  // 如果 payload 是空的就略過
+  if (arg.empty()) {
+    cout << "[WARN] Empty payload. Skipping.\n";
+    return;
+  }
 
   PolicyHandler handler;
   Reader reader;
   StringStream ss(arg.c_str());
-  
-  reader.Parse(ss,handler);
-  cout << "handler.found_threshold " << handler.found_threshold << endl;
-  //Set the threshold value
 
-  if (handler.found_threshold == true) {
+  if (!reader.Parse(ss, handler)) {
+    cout << "[WARN] Failed to parse JSON. Skipping.\n";
+    return;
+  }
+
+  // 忽略 DELETE 操作
+  if (handler.operation == "DELETE") {
+    cout << "[INFO] Received DELETE operation. Skipping prediction.\n";
+    return;
+  }
+
+  cout << "handler.found_threshold: " << handler.found_threshold << endl;
+
+  if (handler.found_threshold) {
     cout << "[INFO] Setting Threshold for A1-P value: " << handler.threshold1 << "\n";
     downlink_threshold = handler.threshold1;
+    send_prediction_request(downlink_threshold);
+  } else {
+    cout << "[INFO] No valid threshold found. Not sending prediction.\n";
   }
-  send_prediction_request(downlink_threshold);             //downlink
-
 }
+
 
 // sends a handover message through REST
 void send_rest_control_request( string ue_id, string serving_cell_id, string target_cell_id ) {
